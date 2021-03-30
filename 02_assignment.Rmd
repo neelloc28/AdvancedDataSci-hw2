@@ -42,6 +42,8 @@ From now on, GitHub should be part of your routine when doing assignments. I rec
 
 **Task**: When you are finished with the assignment, post a link below to the GitHub repo for the assignment. If you want to post it to your personal website, that's ok (not required). Make sure the link goes to a spot in the repo where I can easily find this assignment. For example, if you have a website with a blog and post the assignment as a blog post, link to the post's folder in the repo. As an example, I've linked to my GitHub stacking material [here](https://github.com/llendway/ads_website/tree/master/_posts/2021-03-22-stacking).
 
+[Link to Assignment 2](https://github.com/neelloc28/AdvancedDataSci-hw2)
+
 ## Modeling
 
 Before jumping into these problems, you should read through (and follow along with!) the [model stacking](https://advanced-ds-in-r.netlify.app/posts/2021-03-22-stacking/) and [global model interpretation](https://advanced-ds-in-r.netlify.app/posts/2021-03-24-imlglobal/) tutorials on the Course Materials tab of the course website.
@@ -52,13 +54,74 @@ The outcome we are interested in predicting is `Class`. And according to the dat
 
 **Tasks:** I will be expanding these, but this gives a good outline.
 
-1. Explore the data, concentrating on examining distributions of variables and examining missing values. 
+1. Explore the data, concentrating on examining distributions of variables and examining missing values.
 
-2. Do any data cleaning steps that need to happen before the model is build. For example, you might remove any variables that mean the same thing as the response variable (not sure if that happens here), get rid of rows where all variables have missing values, etc. 
+Distributions of quantitative variables
+```{r}
+lending_club %>% 
+  select(where(is.numeric)) %>% 
+  pivot_longer(cols = everything(),
+               names_to = "variable", 
+               values_to = "value") %>% 
+  ggplot(aes(x = value)) +
+  geom_histogram() +
+  facet_wrap(vars(variable), 
+             scales = "free")
+
+#cleaning: remove delinq amount dataset b/c it was highly correlated probably
+```
+
+Categorical variables
+```{r}
+lending_club %>% 
+  select(where(is.factor)) %>% 
+  pivot_longer(cols = everything(),
+               names_to = "variable", 
+               values_to = "value") %>% 
+  ggplot(aes(x = value)) +
+  geom_bar() +
+  facet_wrap(vars(variable), 
+             scales = "free", 
+             nrow = 2)
+```
+
+Looking at missing values
+```{r}
+gg_miss_var(lending_club)
+
+#No missing values!
+```
+
+
+
+
+2. Do any data cleaning steps that need to happen before the model is build. For example, you might remove any variables that mean the same thing as the response variable (not sure if that happens here), get rid of rows where all variables have missing values, etc.
+```{r}
+#remove variables that have overwhelming amounts of zeros and are likely highly correlated with the outcome
+lending_club <- lending_club %>%
+  select(-delinq_amnt,-acc_now_delinq)
+
+#lump states based on region
+regions <- read.csv("statesregions.csv")
+
+regions <- regions %>%
+  mutate(addr_state = State.Code)
+
+#changing the addr_state variable to Region so it has less levels
+lending_club <- lending_club %>%
+  left_join(regions) %>%
+  select(-addr_state, -State, -State.Code, -Division) %>%
+  mutate(Region = as.factor(Region))
+
+lending_club
+```
+
 
 Be sure to add more "bad" Classes. This is not the best solution, but it will work for now. (Should investigate how to appropriately use `step_sample_up()` function from [`themis`](https://github.com/tidymodels/themis)).
 
 ```{r}
+set.seed(494)
+
 create_more_bad <- lending_club %>% 
   filter(Class == "bad") %>% 
   sample_n(size = 3000, replace = TRUE)
@@ -71,21 +134,130 @@ lending_club_mod <- lending_club %>%
 
 ```{r}
 set.seed(494) # for reproducibility
+
+#randomly assign 75% of the data to training
+lending_club_split <- initial_split(lending_club_mod, strata = 'Class', prop = .75)
+
+lending_club_split
+
+#training and testing datasets
+lending_club_training <- training(lending_club_split)
+lending_club_testing <- testing(lending_club_split)
 ```
 
 4. Set up the recipe and the pre-processing steps to build a lasso model. Some steps you should take:
 
 * Make all integer variables numeric (I'd highly recommend using `step_mutate_at()` or this will be a lot of code). We'll want to do this for the model interpretation we'll do later.  
-* Think about grouping factor variables with many levels.  
+* Think about grouping factor variables with many levels. **I did it for the states above because it felt more intuitive for me to modify the dataset before I made the mod so I could get rid of addr_state.**
+```{r} 
+#seeing which factor variables have many levels
+lapply(lending_club, levels)
+#lump all the As together, and Bs, etc.
+```
+
 * Make categorical variables dummy variables (make sure NOT to do this to the outcome variable).  
 * Normalize quantitative variables.  
 
+```{r}
+lending_recipe <- recipe(Class ~ ., data = lending_club_training) %>%
+  step_mutate_at(all_numeric(), fn = ~ as.numeric(.)) %>% #make all numeric vars numeric
+  step_mutate(sub_grade = fct_collapse(sub_grade, A = c("A1","A2","A3","A4","A5"), 
+               B = c("B1","B2","B3","B4","B5"), 
+               C = c("C1","C2","C3","C4","C5"), #collapsing levels in sub_grade into less
+               D = c("D1","D2","D3","D4","D5"), 
+               E = c("E1","E2","E3","E4","E5"),
+               f = c("F1","F2","F3","F4","F5"),
+               G = c("G1","G2","G3","G4","G5"))) %>%
+  step_normalize(all_predictors(),-all_nominal()) %>% #normalize quantitative vars
+  step_dummy(all_nominal(),-all_outcomes()) #make categorical vars dummy vars
+
+
+#using prep and juice to make sure everything went as planned
+lending_recipe %>%
+  prep(lending_club_training) %>%
+  juice()
+```
+
+
 5. Set up the lasso model and workflow. We will tune the `penalty` parameter.
+```{r}
+#lasso model
+lending_lasso_mod <-
+  logistic_reg(mixture = 1) %>%
+  set_engine("glmnet") %>%
+  set_args(penalty = tune()) %>%
+  set_mode("classification")
+
+#lasso workflow
+lending_lasso_wf <-
+  workflow() %>%
+  add_recipe(lending_recipe) %>%
+  add_model(lending_lasso_mod)
+
+lending_lasso_wf
+```
+
 
 6. Set up the model tuning for the `penalty` parameter. Be sure to add the `control_stack_grid()` for the `control` argument so we can use these results later when we stack. Find the accuracy and area under the roc curve for the model with the best tuning parameter.  Use 5-fold cv.
 
 ```{r}
 set.seed(494) #for reproducible 5-fold
+
+#5-fold cross-validation
+lending_cv <- vfold_cv(lending_club_training, v = 5)
+
+#penalty grid: 10 levels
+penalty_grid <- grid_regular(penalty(),
+                             levels = 10)
+
+#make sure predictions and workflows are saved for stacking in the future
+ctrl_grid <- control_stack_grid()
+
+#tune using 5-fold cv
+lending_lasso_tune <-
+  lending_lasso_wf %>%
+  tune_grid(
+    resamples = lending_cv,
+    grid = penalty_grid
+  )
+
+lending_accuracy <- lending_lasso_tune %>%
+  collect_metrics() %>%
+  filter(.metric == "accuracy")
+
+lending_roc_auc <- lending_lasso_tune %>%
+  collect_metrics() %>%
+  filter(.metric == "roc_auc")
+
+ggplot(lending_accuracy, aes(x = penalty, y = mean)) +
+  geom_point() +
+  geom_line() +
+  scale_x_log10(
+   breaks = scales::trans_breaks("log10", function(x) 10^x),
+   labels = scales::trans_format("log10",scales::math_format(10^.x))) +
+  ggtitle("Accuracy over different penalties") +
+  ylab("accuracy")
+
+ggplot(lending_roc_auc, aes(x = penalty, y = mean)) +
+  geom_point() +
+  geom_line() +
+  scale_x_log10(
+   breaks = scales::trans_breaks("log10", function(x) 10^x),
+   labels = scales::trans_format("log10",scales::math_format(10^.x))) +
+  ggtitle("Area under roc curve over different penalties") +
+  ylab("roc_auc")
+
+#select best tuning parameter (accuracy and area under roc curve)
+best_param_lending <- lending_lasso_tune %>%
+  select_best(metric = "accuracy", "roc_auc")
+
+#Is it always the case that the best tuning parameter will be the same for these two metrics?
+best_param_lending
+
+#best tuning parameter is 0.0004641589
+
+#accuracy for best tuning parameter: 0.7487296
+#area under roc curve for best tuning parameter: 0.7656651
 ```
 
 
@@ -143,6 +315,14 @@ Specifically, you will do the following:
 ## Coded Bias
 
 Watch the [Code Bias](https://www.pbs.org/independentlens/films/coded-bias/) film and write a short reflection. If you want some prompts, reflect on: What part of the film impacted you the most? Was there a part that surprised you and why? What emotions did you experience while watching?
+
+"The past dwells within our algorithms" (how the data is collected, who is represented and who isn't, data was collected in the past in order to predict the future)
+  -how are we supposed to make progress in being less discriminatory and more inclusive in the future if the algorithms are basing their assignments on the past? but how are we supposed to predict future data?
+
+Really scary thinking about how easy it would be to surveil and track people (with inaccurate and biased facial-recognition technology) w/o ppl's consent
+
+it is easy to brush off the fact that we see all of these targeted ads and content because of AI but the quote "your view of the world is being governed by artificial intelligence" really made me feel creeped out
+  -we feel relieved that we don't live in a society with constant facial recognition and social credit scores like China, but we have pervasive algorithmic bias and discrimination as well, that is geared toward advancing capitalism, keeping the wealthy wealthy and the poor, minority populations "in check", no matter the cost
 
 
 REMEMBER TO ADD YOUR GITHUB LINK AT THE TOP OF THE PAGE AND UNCOMMENT THE `knitr` OPTIONS.
