@@ -369,8 +369,11 @@ lending_forest_final_mod <- lending_forest_final_wf %>%
 lending_forest_explain <- 
   explain_tidymodels(
     model = lending_forest_final_mod,
-    data = lending_club_training %>% select(-Class), 
-    y = lending_club_training %>%  pull(Class),
+    data = lending_club_training %>% 
+      select(-Class), 
+    y = lending_club_training %>%
+      mutate(Class_num = as.integer(Class =="good")) %>%
+      pull(Class_num),
     label = "rf"
   )
 
@@ -379,8 +382,11 @@ lending_forest_explain <-
 lending_lasso_explain <- 
   explain_tidymodels(
     model = lending_lasso_final_mod,
-    data = lending_club_training %>% select(-Class), 
-    y = lending_club_training %>%  pull(Class),
+    data = lending_club_training %>%
+      select(-Class), 
+    y = lending_club_training %>%
+      mutate(Class_num = as.integer(Class =="good")) %>%
+      pull(Class_num),
     label = "lasso"
   )
 
@@ -391,11 +397,33 @@ rf_mod_perf <- model_performance(lending_forest_explain)
 
 12. Use `DALEX` functions to create a variable importance plot from this model. What are the most important variables?
 ```{r}
+set.seed(10) #since we are sampling & permuting, we set a seed so we can replicate the results
+rf_var_imp <- 
+  model_parts(
+    lending_forest_explain
+    )
 
+plot(rf_var_imp, show_boxplots = TRUE)
+
+#Here, the most important variables in predicting Class are annual_inc (self-reported annual income), int_rate (interest rate on the loan), and revol_util (amount of credit borrower is using relative to all available revolving credit)
 ```
 
 
 13. Write a function called `cp_profile` to make a CP profile. The function will take an explainer, a new observation, and a variable name as its arguments and create a CP profile for a quantitative predictor variable. You will need to use the `predict_profile()` function inside the function you create - put the variable name there so the plotting part is easier. You'll also want to use `aes_string()` rather than `aes()` and quote the variables. Use the `cp_profile()` function to create one CP profile of your choosing. Be sure to choose a variable that is numeric, not integer. There seem to be issues with those that I'm looking into.
+```{r}
+#ceteris parabus profiles, or CP profiles, show how one variable affects the outcome, holding all other variables fixed, for one observation.
+
+cp_profile <- function(explainer, new_obs, var_name) {
+  predict_profile(explainer, new_obs)
+}
+
+obs4 <- lending_club_training %>% 
+  slice(4)
+obs4
+
+predict_profile(explainer = lending_forest_explain, new_observation = obs4)
+```
+
 
 For an extra challenge, write a function that will work for either a quantitative or categorical variable. 
 
