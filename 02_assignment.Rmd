@@ -260,18 +260,140 @@ best_param_lending
 #area under roc curve for best tuning parameter: 0.7656651
 ```
 
+```{r}
+# finalize workflow
+lending_lasso_final_wf <- lending_lasso_wf %>%
+  finalize_workflow(best_param_lending)
 
-7. Set up the recipe and the pre-processing steps to build a random forest model. You shouldn't have to do as many steps. The only step you should need to do is making all integers numeric. 
+#fit final model with best tuning parameter
+lending_lasso_final_mod <- lending_lasso_final_wf %>%
+  fit(data = lending_club)
+```
+
+
+7. Set up the recipe and the pre-processing steps to build a random forest model. You shouldn't have to do as many steps. The only step you should need to do is making all integers numeric.
+```{r}
+#preprocessing
+lending_recipe_forest <- recipe(Class ~ ., data = lending_club_training) %>%
+  step_mutate_at(all_numeric(), fn = ~ as.numeric(.))
+```
 
 8. Set up the random forest model and workflow. We will tune the `mtry` and `min_n` parameters and set the number of trees, `trees`, to 100 (otherwise the next steps take too long).
+```{r}
+#build model
+lending_forest_mod <-
+  rand_forest(mtry = tune(), min_n = tune(), trees = 200) %>%
+  set_mode("classification") %>%
+  set_engine("ranger")
+
+#workflow
+lending_forest_wf <-
+  workflow() %>%
+  add_recipe(lending_recipe_forest) %>%
+  add_model(lending_forest_mod)
+
+lending_forest_wf
+```
+
 
 9. Set up the model tuning for both the `mtry` and `min_n` parameters. Be sure to add the `control_stack_grid()` for the `control` argument so we can use these results later when we stack. Use only 3 levels in the grid. For the `mtry` parameter, you need to put `finalize(mtry(), lending_training %>% select(-Class))` in as an argument instead of just `mtry()`, where `lending_training` is the name of your training data. This is because the `mtry()` grid will otherwise have unknowns in it. This part can take a while to run.
+```{r}
+set.seed(494)
 
-10. Find the best tuning parameters. What is the are the accuracy and area under the ROC curve for the model with those tuning parameters?
+metric <- metric_set(roc_auc, accuracy)
+
+#choose penalty parameter values
+penalty_grid_forest <- grid_regular(finalize(mtry(), lending_club_training %>% select(-Class)), min_n(), levels = 3)
+
+penalty_grid_forest
+
+ctrl_grid <- control_stack_grid()
+
+#tune using 5-fold cv
+lending_forest_tune <-
+  lending_forest_wf %>%
+  tune_grid(
+    resamples = lending_cv,
+    grid = penalty_grid_forest,
+    control = ctrl_grid,
+    metrics = metric
+  )
+
+lending_forest_tune
+```
+
+
+10. Find the best tuning parameters. What are the accuracy and area under the ROC curve for the model with those tuning parameters?
+```{r}
+#select best tuning parameter (accuracy-wise)
+best_accuracy_lending <- lending_forest_tune %>%
+  select_best(metric = "accuracy")
+
+best_accuracy_lending
+
+best_roc_lending <- lending_forest_tune %>%
+  select_best(metric = "roc_auc")
+
+best_roc_lending
+
+lending_forest_accuracy <- lending_forest_tune %>%
+  collect_metrics() %>%
+  filter(.metric == "accuracy")
+
+lending_forest_roc <- lending_forest_tune %>%
+  collect_metrics() %>%
+  filter(.metric == "roc_auc")
+
+#best mtry is 10 and best min_n is 2
+
+#accuracy for best tuning parameters: 0.9905639
+
+#roc_auc for best tuning parameters: 0.9949828
+```
+
+```{r}
+# finalize workflow
+lending_forest_final_wf <- lending_forest_wf %>%
+  finalize_workflow(best_accuracy_lending)
+
+#fit final model with best tuning parameter
+lending_forest_final_mod <- lending_forest_final_wf %>%
+  fit(data = lending_club)
+```
+
+
 
 11. Use functions from the `DALEX` and `DALEXtra` libraries to create a histogram and boxplot of the residuals from the training data. How do they look? Any interesting behavior?
+```{r}
+#create explainer ("an object that provides a uniform interface for different models.")
+lending_forest_explain <- 
+  explain_tidymodels(
+    model = lending_forest_final_mod,
+    data = lending_club_training %>% select(-Class), 
+    y = lending_club_training %>%  pull(Class),
+    label = "rf"
+  )
 
-12. Use `DALEX` functions to create a variable importance plot from this model. What are the most important variables? 
+
+#create explainer ("an object that provides a uniform interface for different models.")
+lending_lasso_explain <- 
+  explain_tidymodels(
+    model = lending_lasso_final_mod,
+    data = lending_club_training %>% select(-Class), 
+    y = lending_club_training %>%  pull(Class),
+    label = "lasso"
+  )
+
+lasso_mod_perf <- model_performance(lending_lasso_explain)
+rf_mod_perf <- model_performance(lending_forest_explain)
+```
+
+
+12. Use `DALEX` functions to create a variable importance plot from this model. What are the most important variables?
+```{r}
+
+```
+
 
 13. Write a function called `cp_profile` to make a CP profile. The function will take an explainer, a new observation, and a variable name as its arguments and create a CP profile for a quantitative predictor variable. You will need to use the `predict_profile()` function inside the function you create - put the variable name there so the plotting part is easier. You'll also want to use `aes_string()` rather than `aes()` and quote the variables. Use the `cp_profile()` function to create one CP profile of your choosing. Be sure to choose a variable that is numeric, not integer. There seem to be issues with those that I'm looking into.
 
