@@ -392,7 +392,22 @@ lending_lasso_explain <-
 
 lasso_mod_perf <- model_performance(lending_lasso_explain)
 rf_mod_perf <- model_performance(lending_forest_explain)
+
+#histogram of residuals of training data
+hist_plot <- 
+  plot(lasso_mod_perf,
+       rf_mod_perf, 
+       geom = "histogram")
+
+box_plot <-
+  plot(lasso_mod_perf,
+       rf_mod_perf, 
+       geom = "boxplot")
+
+hist_plot + box_plot
 ```
+
+**Need explanation**
 
 
 12. Use `DALEX` functions to create a variable importance plot from this model. What are the most important variables?
@@ -413,15 +428,31 @@ plot(rf_var_imp, show_boxplots = TRUE)
 ```{r}
 #ceteris parabus profiles, or CP profiles, show how one variable affects the outcome, holding all other variables fixed, for one observation.
 
+#var_name must be numeric (not integer) and in quotations
 cp_profile <- function(explainer, new_obs, var_name) {
-  predict_profile(explainer, new_obs)
+  cpp <- predict_profile(explainer = explainer, 
+                  new_observation = lending_club_training[new_obs,],
+                  variables = var_name)
+  cpp
+  # cpp %>% 
+  # filter(`_vname_` %in% c(var_name)) %>% 
+  # ggplot(aes_string(x = var_name,
+  #            y = `_yhat_`)) +
+  # geom_line() 
 }
+
+
+cp_profile(lending_forest_explain, 4, "int_rate")
 
 obs4 <- lending_club_training %>% 
   slice(4)
 obs4
 
-predict_profile(explainer = lending_forest_explain, new_observation = obs4)
+#why is it not copying it 50 times w/ different values of int_rate??
+predict_profile(explainer = lending_forest_explain,
+                new_observation = obs4, variables = "int_rate")
+
+lending_forest_explain
 ```
 
 
