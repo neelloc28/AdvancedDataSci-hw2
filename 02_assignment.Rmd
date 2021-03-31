@@ -25,6 +25,7 @@ library(vip)               # for variable importance plots
 library(DALEX)             # for model interpretation  
 library(DALEXtra)          # for extension of DALEX
 library(patchwork)         # for combining plots nicely
+library(kknn)              # for knn models
 theme_set(theme_minimal()) # Lisa's favorite theme
 ```
 
@@ -218,7 +219,8 @@ lending_lasso_tune <-
   lending_lasso_wf %>%
   tune_grid(
     resamples = lending_cv,
-    grid = penalty_grid
+    grid = penalty_grid,
+    control = ctrl_grid
   )
 
 lending_accuracy <- lending_lasso_tune %>%
@@ -358,7 +360,7 @@ lending_forest_final_wf <- lending_forest_wf %>%
 
 #fit final model with best tuning parameter
 lending_forest_final_mod <- lending_forest_final_wf %>%
-  fit(data = lending_club)
+  fit(data = lending_club_training)
 ```
 
 
@@ -395,19 +397,17 @@ rf_mod_perf <- model_performance(lending_forest_explain)
 
 #histogram of residuals of training data
 hist_plot <- 
-  plot(lasso_mod_perf,
-       rf_mod_perf, 
+  plot(rf_mod_perf, 
        geom = "histogram")
 
 box_plot <-
-  plot(lasso_mod_perf,
-       rf_mod_perf, 
+  plot(rf_mod_perf, 
        geom = "boxplot")
 
 hist_plot + box_plot
 ```
 
-**Need explanation**
+**Although this matters more for quantitative variables want the plot of the residuals to be normally distributed.  In this case, the residuals seem to have a giant spike at 0 (which is good) and are slightly right-skewed.**
 
 
 12. Use `DALEX` functions to create a variable importance plot from this model. What are the most important variables?
@@ -431,28 +431,19 @@ plot(rf_var_imp, show_boxplots = TRUE)
 #var_name must be numeric (not integer) and in quotations
 cp_profile <- function(explainer, new_obs, var_name) {
   cpp <- predict_profile(explainer = explainer, 
-                  new_observation = lending_club_training[new_obs,],
+                  new_observation = new_obs,
                   variables = var_name)
-  cpp
-  # cpp %>% 
-  # filter(`_vname_` %in% c(var_name)) %>% 
-  # ggplot(aes_string(x = var_name,
-  #            y = `_yhat_`)) +
-  # geom_line() 
+  cpp %>% rename(yhat = `_yhat_`) %>% 
+   ggplot(aes_string(x = var_name,
+              y = "yhat")) +
+   geom_line() 
 }
-
-
-cp_profile(lending_forest_explain, 4, "int_rate")
 
 obs4 <- lending_club_training %>% 
   slice(4)
 obs4
 
-#why is it not copying it 50 times w/ different values of int_rate??
-predict_profile(explainer = lending_forest_explain,
-                new_observation = obs4, variables = "int_rate")
-
-lending_forest_explain
+cp_profile(lending_forest_explain, obs4, "int_rate")
 ```
 
 
@@ -463,11 +454,85 @@ If you need help with function writing check out the [Functions](https://r4ds.ha
 
 14. Use `DALEX` functions to create partial dependence plots (with the CP profiles in gray) for the 3-4 most important variables. If the important variables are categorical, you can instead make a CP profile for 3 observations in the dataset and discuss how you could go about constructing a partial dependence plot for a categorical variable (you don't have to code it, but you can if you want an extra challenge). If it ever gives you an error that says, "Error: Can't convert from `VARIABLE` <double> to `VARIABLE` <integer> due to loss of precision", then remove that variable from the list. I seem to have figured out why it's doing that, but I don't know how to fix it yet.
 
-15. Fit one more model type of your choosing that will feed into the stacking model. 
+```{r}
+set.seed(494) # since we take a sample of 100 obs
+# This takes a while to run. 
+# If we only want to examine a few variables, add variables argument to model_profile.
+
+rf_pdp <- model_profile(explainer = lending_forest_explain, variables = c("int_rate", "annual_inc", "revol_util"))
+
+plot(rf_pdp, 
+     variables = c("int_rate", "annual_inc", "revol_util"),
+     geom = "profiles")
+```
+
+
+15. Fit one more model type of your choosing that will feed into the stacking model.
+
+K-nearest neighbors
+```{r}
+# create a model definition
+lending_knn_mod <-
+  nearest_neighbor(
+    neighbors = tune("k")
+  ) %>%
+  set_engine("kknn") %>% 
+  set_mode("classification")
+
+# create the workflow
+knn_wf <- 
+  workflow() %>% 
+  add_model(lending_knn_mod) %>%
+  add_recipe(lending_recipe)
+
+# tune it using 4 tuning parameters
+lending_knn_tune <- 
+  knn_wf %>% 
+  tune_grid(
+    lending_cv,
+    metrics = metric,
+    grid = 4,
+    control = ctrl_grid
+  )
+```
+
 
 16. Create a model stack with the candidate models from the previous parts of the exercise and use the `blend_predictions()` function to find the coefficients of the stacked model. Create a plot examining the performance metrics for the different penalty parameters to assure you have captured the best one. If not, adjust the penalty. (HINT: use the `autoplot()` function). Which models are contributing most?
+```{r}
+lending_stack <-
+  stacks() %>%
+  add_candidates(lending_forest_tune) %>%
+  add_candidates(lending_lasso_tune) %>%
+  add_candidates(lending_knn_tune)
+
+as_tibble(lending_stack)
+
+lending_blend <- 
+  lending_stack %>% 
+  blend_predictions()
+
+lending_blend
+
+autoplot(lending_blend)
+```
+
+**The random forest model is contributing the most (in fact, it's the only one contributing in this case?).**
+
 
 17. Fit the final stacked model using `fit_members()`. Apply the model to the test data and report the accuracy and area under the curve. Create a graph of the ROC and construct a confusion matrix. Comment on what you see. Save this final model using the `saveRDS()` function - see the [Use the model](https://advanced-ds-in-r.netlify.app/posts/2021-03-16-ml-review/#use-the-model) section of the `tidymodels` intro. We are going to use the model in the next part. You'll want to save it in the folder where you create your shiny app.
+```{r}
+lending_final_stack <- lending_blend %>% 
+  fit_members()
+
+lending_final_stack
+
+lending_final_stack %>% 
+  predict(new_data = lending_club_testing) %>% 
+  bind_cols(lending_club_testing) %>%
+  collect_metrics()
+```
+
+**Is there any good way to intuitively and simply explain this procedure (akin to how to explain linear regression) to someone who isn't familiar with modeling?**
 
 ## Shiny app
 
@@ -497,14 +562,9 @@ Specifically, you will do the following:
 
 Watch the [Code Bias](https://www.pbs.org/independentlens/films/coded-bias/) film and write a short reflection. If you want some prompts, reflect on: What part of the film impacted you the most? Was there a part that surprised you and why? What emotions did you experience while watching?
 
-"The past dwells within our algorithms" (how the data is collected, who is represented and who isn't, data was collected in the past in order to predict the future)
-  -how are we supposed to make progress in being less discriminatory and more inclusive in the future if the algorithms are basing their assignments on the past? but how are we supposed to predict future data?
+I think that the quote and common theme that "the past dwells within our algorithms" is crucial to be aware of.  How the data was collected and who is represented (and who isn't) reflects where our society was *at the time of collection.*  Therefore, how are we going to make progress in being less discriminatory and more inclusive in the future if the algorithms are basing their assignments on the past?  I wonder if there is some way to simulate future data or just do something to make past data more representative of current and future needs.
 
-Really scary thinking about how easy it would be to surveil and track people (with inaccurate and biased facial-recognition technology) w/o ppl's consent
-
-it is easy to brush off the fact that we see all of these targeted ads and content because of AI but the quote "your view of the world is being governed by artificial intelligence" really made me feel creeped out
-  -we feel relieved that we don't live in a society with constant facial recognition and social credit scores like China, but we have pervasive algorithmic bias and discrimination as well, that is geared toward advancing capitalism, keeping the wealthy wealthy and the poor, minority populations "in check", no matter the cost
-
+Coded Bias also led me to think a lot about how we compare our society with one such as China.  We feel relieved that we don't live in a society with constant facial recognition and social credit scores, but our society is tracking us and being exclusionary based on the (often inaccurate) data they gather about us.  We have pervasive algorithmic bias that is geared toward capitalistic gain, keeping the rich rich, and keeping minority populations down (ex. the facial recognition in the apartment building from the documentary).  It was creepy (and true) that the documentary said that the main difference between the surveillance of the US and China is that China is being transparent about it, whereas we are letting it fly under the radar.
 
 REMEMBER TO ADD YOUR GITHUB LINK AT THE TOP OF THE PAGE AND UNCOMMENT THE `knitr` OPTIONS.
 
