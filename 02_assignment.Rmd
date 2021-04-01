@@ -526,13 +526,35 @@ lending_final_stack <- lending_blend %>%
 
 lending_final_stack
 
-lending_final_stack %>% 
+final_stack_table <- lending_final_stack %>% 
   predict(new_data = lending_club_testing) %>% 
   bind_cols(lending_club_testing) %>%
-  collect_metrics()
+  mutate(correct_prediction = ifelse(.pred_class == Class, TRUE, FALSE))
+
+#accuracy
+final_stack_accuracy <- accuracy(final_stack_table, Class, .pred_class)
+final_stack_accuracy
+#accuracy is 0.9965775
+
+#area under the curve
+lending_final_stack$metrics %>% 
+  filter(.metric == "roc_auc")
+#roc_auc is 0.9949827
+
+#ROC
+autoplot(lending_final_stack)
+
+#confusion matrix
+conf_mat(data = final_stack_table, truth = Class, estimate = .pred_class)
 ```
 
-**Is there any good way to intuitively and simply explain this procedure (akin to how to explain linear regression) to someone who isn't familiar with modeling?**
+**I see that this blended model (which is essentially the random forest model with the best tuning parameters) has a super high accuracy and roc_auc.  There were only 11 false positives (predicting that they would pay back a loan when they actually didn't) and 0 false negatives (predicting they wouldn't pay back a loan and they actually did).**
+
+```{r}
+#save final stacked model
+saveRDS(lending_final_stack, file = "lending_final_stack.rds")
+```
+
 
 ## Shiny app
 
