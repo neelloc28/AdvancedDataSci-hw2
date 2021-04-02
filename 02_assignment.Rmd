@@ -114,7 +114,15 @@ lending_club <- lending_club %>%
   select(-addr_state, -State, -State.Code, -Division) %>%
   mutate(Region = as.factor(Region))
 
-lending_club
+#changing the sub_grade variable so it has less levels
+lending_club <- lending_club %>%
+  mutate(sub_grade = fct_collapse(sub_grade, A = c("A1","A2","A3","A4","A5"), 
+               B = c("B1","B2","B3","B4","B5"), 
+               C = c("C1","C2","C3","C4","C5"), #collapsing levels in sub_grade into less
+               D = c("D1","D2","D3","D4","D5"), 
+               E = c("E1","E2","E3","E4","E5"),
+               f = c("F1","F2","F3","F4","F5"),
+               G = c("G1","G2","G3","G4","G5")))
 ```
 
 
@@ -162,13 +170,13 @@ lapply(lending_club, levels)
 ```{r}
 lending_recipe <- recipe(Class ~ ., data = lending_club_training) %>%
   step_mutate_at(all_numeric(), fn = ~ as.numeric(.)) %>% #make all numeric vars numeric
-  step_mutate(sub_grade = fct_collapse(sub_grade, A = c("A1","A2","A3","A4","A5"), 
-               B = c("B1","B2","B3","B4","B5"), 
-               C = c("C1","C2","C3","C4","C5"), #collapsing levels in sub_grade into less
-               D = c("D1","D2","D3","D4","D5"), 
-               E = c("E1","E2","E3","E4","E5"),
-               f = c("F1","F2","F3","F4","F5"),
-               G = c("G1","G2","G3","G4","G5"))) %>%
+  # step_mutate(sub_grade = fct_collapse(sub_grade, A = c("A1","A2","A3","A4","A5"), 
+  #              B = c("B1","B2","B3","B4","B5"), 
+  #              C = c("C1","C2","C3","C4","C5"), #collapsing levels in sub_grade into less
+  #              D = c("D1","D2","D3","D4","D5"), 
+  #              E = c("E1","E2","E3","E4","E5"),
+  #              f = c("F1","F2","F3","F4","F5"),
+  #              G = c("G1","G2","G3","G4","G5"))) %>%
   step_normalize(all_predictors(),-all_nominal()) %>% #normalize quantitative vars
   step_dummy(all_nominal(),-all_outcomes()) #make categorical vars dummy vars
 
@@ -178,6 +186,8 @@ lending_recipe %>%
   prep(lending_club_training) %>%
   juice()
 ```
+
+**Note: even though the changes I made to combine the values of sub_grade worked when I prepped and juiced it, it did not seem to apply when I made the models.  I'm not sure why, but I commented it out here and just made the change before I split the data so that it would show up in the models.**
 
 
 5. Set up the lasso model and workflow. We will tune the `penalty` parameter.
@@ -260,6 +270,8 @@ best_param_lending
 
 #accuracy for best tuning parameter: 0.7487296
 #area under roc curve for best tuning parameter: 0.7656651
+
+
 ```
 
 ```{r}
@@ -269,7 +281,11 @@ lending_lasso_final_wf <- lending_lasso_wf %>%
 
 #fit final model with best tuning parameter
 lending_lasso_final_mod <- lending_lasso_final_wf %>%
-  fit(data = lending_club)
+  fit(data = lending_club_training)
+
+lending_lasso_final_mod %>% 
+  predict(new_data = lending_club_testing) %>% 
+  bind_cols(lending_club_testing)
 ```
 
 
@@ -516,7 +532,7 @@ lending_blend
 autoplot(lending_blend)
 ```
 
-**The random forest model is contributing the most (in fact, it's the only one contributing in this case?).**
+**The random forest model is contributing the most.**
 
 
 17. Fit the final stacked model using `fit_members()`. Apply the model to the test data and report the accuracy and area under the curve. Create a graph of the ROC and construct a confusion matrix. Comment on what you see. Save this final model using the `saveRDS()` function - see the [Use the model](https://advanced-ds-in-r.netlify.app/posts/2021-03-16-ml-review/#use-the-model) section of the `tidymodels` intro. We are going to use the model in the next part. You'll want to save it in the folder where you create your shiny app.
@@ -526,29 +542,30 @@ lending_final_stack <- lending_blend %>%
 
 lending_final_stack
 
-final_stack_table <- lending_final_stack %>% 
-  predict(new_data = lending_club_testing) %>% 
-  bind_cols(lending_club_testing) %>%
-  mutate(correct_prediction = ifelse(.pred_class == Class, TRUE, FALSE))
+final_stack_table <- lending_club_testing %>% 
+  mutate(predict(lending_final_stack, new_data = .)) %>%
+  mutate(predict(lending_final_stack, new_data = ., type = "prob"))
 
 #accuracy
 final_stack_accuracy <- accuracy(final_stack_table, Class, .pred_class)
 final_stack_accuracy
-#accuracy is 0.9965775
+#accuracy is 0.9984443
 
 #area under the curve
 lending_final_stack$metrics %>% 
   filter(.metric == "roc_auc")
-#roc_auc is 0.9949827
+#roc_auc is 0.9977890
 
 #ROC
 autoplot(lending_final_stack)
 
 #confusion matrix
 conf_mat(data = final_stack_table, truth = Class, estimate = .pred_class)
+
+names(final_stack_table)
 ```
 
-**I see that this blended model (which is essentially the random forest model with the best tuning parameters) has a super high accuracy and roc_auc.  There were only 11 false positives (predicting that they would pay back a loan when they actually didn't) and 0 false negatives (predicting they wouldn't pay back a loan and they actually did).**
+**I see that this blended model (which is has two random forest models) has a super high accuracy and roc_auc.  There were only 11 false positives (predicting that they would pay back a loan when they actually didn't) and 0 false negatives (predicting they wouldn't pay back a loan and they actually did).**
 
 ```{r}
 #save final stacked model
@@ -589,5 +606,8 @@ I think that the quote and common theme that "the past dwells within our algorit
 Coded Bias also led me to think a lot about how we compare our society with one such as China.  We feel relieved that we don't live in a society with constant facial recognition and social credit scores, but our society is tracking us and being exclusionary based on the (often inaccurate) data they gather about us.  We have pervasive algorithmic bias that is geared toward capitalistic gain, keeping the rich rich, and keeping minority populations down (ex. the facial recognition in the apartment building from the documentary).  It was creepy (and true) that the documentary said that the main difference between the surveillance of the US and China is that China is being transparent about it, whereas we are letting it fly under the radar.
 
 REMEMBER TO ADD YOUR GITHUB LINK AT THE TOP OF THE PAGE AND UNCOMMENT THE `knitr` OPTIONS.
+
+
+
 
 
